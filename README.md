@@ -18,4 +18,4 @@ A movie taste analyzer built with Python, Flask, and the TMDB API. Enter movies 
 - Vanilla HTML/CSS/JS frontend
 
 ## A note on how this was built
-I built the backend logic myself — API integration, genre analysis, personality/recommendation logic, and the comment system. For the frontend design, I worked closely with AI assistance to shape the visual direction. I spent the weeks before this project learning Python fundamentals and understand how the code works.
+I built the backend logic myself: API integration, genre analysis, personality/recommendation logic, and the comment system. For the frontend design, I worked closely with AI assistance to shape the visual direction. I spent the weeks before this project learning Python fundamentals and understand how the code works.
