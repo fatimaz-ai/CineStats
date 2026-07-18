@@ -1,6 +1,5 @@
-from flask import Flask, request, jsonify, send_from_directory,make_response
+from flask import Flask, request, jsonify, send_from_directory, make_response
 import requests
-
 import json
 import uuid
 import os
@@ -8,12 +7,10 @@ import time
 from dotenv import load_dotenv
 load_dotenv()
 
-#for admin pw
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "a_fallback_default_password")
 
 COMMENTS_FILE = 'comments.json'
 
-##for the feedback/comment stuff
 def load_comments():
     if os.path.exists(COMMENTS_FILE):
         with open(COMMENTS_FILE, 'r') as f:
@@ -26,7 +23,6 @@ def save_comments(comments):
 
 app = Flask(__name__)
 
-import os
 API_KEY = os.environ.get("TMDB_API_KEY")
 
 GENRE_MAP = {
@@ -38,58 +34,111 @@ GENRE_MAP = {
     10752: "War", 37: "Western"
 }
 
-def get_genres(title):
-    url = f"https://api.themoviedb.org/3/search/movie?api_key={API_KEY}&query={title}"
-    response = requests.get(url)
-    data = response.json()
-    movies = data.get('results', [])
-    if len(movies) == 0:
-        return []
-    top_result = movies[0]
-    genre_ids = top_result.get('genre_ids', [])
-    genres = [GENRE_MAP[gid] for gid in genre_ids if gid in GENRE_MAP]
-    return genres
+TV_GENRE_MAP = {
+    10759: "Action", 16: "Animation", 35: "Comedy", 80: "Crime",
+    99: "Documentary", 18: "Drama", 10751: "Family", 10762: "Animation",
+    9648: "Mystery", 10763: "Documentary", 10764: "Comedy", 10765: "Sci-Fi",
+    10766: "Romance", 10767: "Comedy", 10768: "War", 37: "Western"
+}
 
 def get_movie_id_and_genres(title):
     url = f"https://api.themoviedb.org/3/search/movie?api_key={API_KEY}&query={title}"
     response = requests.get(url)
     data = response.json()
     movies = data.get('results', [])
-    if not movies:
-        return None, []
-    top = movies[0]
-    genre_ids = top.get('genre_ids', [])
-    genres = [GENRE_MAP[gid] for gid in genre_ids if gid in GENRE_MAP]
-    return top.get('id'), genres
+
+    if movies:
+        top = movies[0]
+        genre_ids = top.get('genre_ids', [])
+        genres = [GENRE_MAP[gid] for gid in genre_ids if gid in GENRE_MAP]
+        language = top.get('original_language', 'en')
+        return top.get('id'), genres, 'movie', language
+
+    tv_url = f"https://api.themoviedb.org/3/search/tv?api_key={API_KEY}&query={title}"
+    tv_response = requests.get(tv_url)
+    tv_data = tv_response.json()
+    shows = tv_data.get('results', [])
+    if shows:
+        top = shows[0]
+        genre_ids = top.get('genre_ids', [])
+        genres = [TV_GENRE_MAP[gid] for gid in genre_ids if gid in TV_GENRE_MAP]
+        language = top.get('original_language', 'en')
+        return top.get('id'), genres, 'tv', language
+
+    return None, [], None, None
+
+def get_genres(title):
+    _, genres, _, _ = get_movie_id_and_genres(title)
+    return genres
 
 def get_recommendations_from_movies(movie_list):
     seen_ids = set()
     input_titles_lower = set(m.lower() for m in movie_list)
     candidates = []
+    languages_found = []
 
     for title in movie_list:
-        movie_id, _ = get_movie_id_and_genres(title)
+        movie_id, _, media_type, language = get_movie_id_and_genres(title)
         if not movie_id:
             continue
-        rec_url = f"https://api.themoviedb.org/3/movie/{movie_id}/recommendations?api_key={API_KEY}"
+        if language:
+            languages_found.append(language)
+
+        rec_url = f"https://api.themoviedb.org/3/{media_type}/{movie_id}/recommendations?api_key={API_KEY}"
         rec_response = requests.get(rec_url)
         rec_data = rec_response.json()
+
         for m in rec_data.get('results', []):
             mid = m.get('id')
-            mtitle = m.get('title', '')
-            if mid in seen_ids or mtitle.lower() in input_titles_lower:
+            m_title = m.get('title') or m.get('name', '')
+            vote_count = m.get('vote_count', 0)
+            m_language = m.get('original_language', '')
+            if mid in seen_ids or m_title.lower() in input_titles_lower or vote_count < 50:
+                continue
+            # only keep candidates matching the input's dominant language
+            if language and m_language != language:
                 continue
             seen_ids.add(mid)
+            m['_media_type'] = media_type
             candidates.append(m)
+
+    top_language = max(set(languages_found), key=languages_found.count) if languages_found else 'en'
+
+    if len(candidates) < 5:
+        all_genres_for_fallback = []
+        for title in movie_list:
+            _, genres, _, _ = get_movie_id_and_genres(title)
+            all_genres_for_fallback.extend(genres)
+
+        if all_genres_for_fallback:
+            top_fallback_genre = max(set(all_genres_for_fallback), key=all_genres_for_fallback.count)
+            genre_id = next((gid for gid, gname in GENRE_MAP.items() if gname == top_fallback_genre), None)
+            if genre_id:
+                discover_url = (
+                    f"https://api.themoviedb.org/3/discover/movie?api_key={API_KEY}"
+                    f"&with_genres={genre_id}&sort_by=popularity.desc&vote_count.gte=50"
+                    f"&with_original_language={top_language}"
+                )
+                discover_response = requests.get(discover_url)
+                discover_data = discover_response.json()
+                for m in discover_data.get('results', []):
+                    mid = m.get('id')
+                    m_title = m.get('title', '')
+                    if mid in seen_ids or m_title.lower() in input_titles_lower:
+                        continue
+                    seen_ids.add(mid)
+                    candidates.append(m)
 
     candidates.sort(key=lambda m: m.get('vote_average', 0), reverse=True)
 
     recommendations = []
     for m in candidates[:5]:
-        year = m['release_date'][:4] if m.get('release_date') else "N/A"
+        title = m.get('title') or m.get('name', 'Unknown')
+        date_field = m.get('release_date') or m.get('first_air_date')
+        year = date_field[:4] if date_field else "N/A"
         poster_path = m.get('poster_path')
         poster_url = f"https://image.tmdb.org/t/p/w200{poster_path}" if poster_path else ""
-        recommendations.append({"title": m['title'], "year": year, "poster": poster_url})
+        recommendations.append({"title": title, "year": year, "poster": poster_url})
     return recommendations
 
 @app.route('/comments', methods=['GET'])
@@ -98,11 +147,9 @@ def get_comments():
     is_admin = request.cookies.get('admin_token', '') == ADMIN_PASSWORD
     comments = load_comments()
 
-    #process comments to declare ownership flags (dynamically)
     processed = []
     for c in comments:
         comment_copy = c.copy()
-        #allows modification if they are the admin OR if their cookie matches the comment token
         comment_copy['can_modify'] = is_admin or (user_token and c.get('token') == user_token)
         processed.append(comment_copy)
     return jsonify(processed)
@@ -115,13 +162,11 @@ def post_comment():
     if not text:
         return jsonify({'error': 'empty comment'}), 400
 
-    #admin login:check if text entry matches password
     if text == ADMIN_PASSWORD:
         resp = make_response(jsonify({'success': True, 'admin_login': True}))
         resp.set_cookie('admin_token', ADMIN_PASSWORD, max_age=31536000, httponly=True)
         return resp
 
-    #device cookies for visitors
     user_token = request.cookies.get('user_token')
     needs_cookie = False
     if not user_token:
@@ -136,7 +181,7 @@ def post_comment():
         'name': name,
         'text': text,
         'token': user_token,
-        'timestamp': time.time()  #records exact seconds since epoch
+        'timestamp': time.time()
     }
     comments.append(new_comment)
     save_comments(comments)
@@ -221,7 +266,7 @@ def delete_comment():
         if c.get('id') == cid:
             if is_admin or c.get('token') == user_token:
                 authorized = True
-                continue #skips adding it back, deleting it
+                continue
         updated.append(c)
 
     if not authorized:
