@@ -6,6 +6,7 @@
 <title>CineStats.exe</title>
 <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script src="https://html2canvas.hertzen.com/dist/html2canvas.min.js"></script>
 <style>
   :root{
     --violet: #58355E;
@@ -253,6 +254,19 @@
     border: 2px solid var(--violet-dark);
     margin-top:4px;
   }
+  .cd-icon-fallback{
+    display:none;
+    width: 46px;
+    height: 46px;
+    flex-shrink:0;
+    border-radius:50%;
+    background: var(--violet);
+    border: 2px solid var(--violet-dark);
+    margin-top:4px;
+}
+.exporting .cd-icon{ display:none !important; }
+.exporting .cd-icon-fallback{ display:block !important; }
+
   .persona{ font-family:'Press Start 2P', monospace; font-size: 17px; color: var(--violet-dark); margin: 0 0 8px; line-height:1.4; }
   .genre-line{ font-size: 19px; margin-bottom: 10px; }
   .quote{
@@ -307,6 +321,20 @@
     flex-shrink:0;
     background: var(--win-face);
   }
+
+  .rec-poster-icon{
+    display:none;
+    width: 40px;
+    height: 58px;
+    background: var(--win-face);
+    border: 1px solid var(--violet-dark);
+    align-items:center;
+    justify-content:center;
+    font-size: 22px;
+    flex-shrink:0;
+}
+.exporting .rec-poster{ display:none !important; }
+.exporting .rec-poster-icon{ display:flex !important; }
   .rec-info{ flex:1; display:flex; flex-direction:column; }
   .rec-info span{ color:#6a5a70; font-size:14px; }
 
@@ -469,6 +497,7 @@
     <div class="window-body">
       <div class="dialog-icon-row">
         <div class="cd-icon"></div>
+        <div class="cd-icon-fallback"></div>
         <div>
           <p class="persona" id="personaText"></p>
           <p class="genre-line">top genre: <b id="genreText"></b></p>
@@ -489,6 +518,9 @@
 </div>
       <div class="tab-content" id="tab-recs">
         <ul class="rec-list" id="recList"></ul>
+      </div>
+      <div class="btn-row" style="margin-top: 16px;">
+    <button onclick="saveResult()">[ SAVE RESULT ]</button>
       </div>
     </div>
   </div>
@@ -679,6 +711,18 @@ async function saveEdit(id) {
   }
 }
 
+function saveResult(){
+    const resultWindow = document.getElementById('resultWindow');
+    resultWindow.classList.add('exporting');
+    html2canvas(resultWindow, { useCORS: true, backgroundColor: '#ded7e6' }).then(canvas => {
+        resultWindow.classList.remove('exporting');
+        const link = document.createElement('a');
+        link.download = 'my-cinestats-result.png';
+        link.href = canvas.toDataURL('image/png');
+        link.click();
+    });
+}
+
 async function deleteComment(id) {
   if(!confirm("Are you sure you want to delete this comment?")) return;
   try {
@@ -720,6 +764,14 @@ async function analyze(){
 
   if(movies.length === 0){
     errorMsg.textContent = "> ERROR: type at least one movie first.";
+    errorMsg.style.display = 'block';
+    resultWindow.style.display = 'none';
+    return;
+  }
+
+  const tooShort = movies.some(m => m.length < 3);
+  if(tooShort){
+    errorMsg.textContent = "> ERROR: please enter full movie or show titles.";
     errorMsg.style.display = 'block';
     resultWindow.style.display = 'none';
     return;
@@ -794,7 +846,8 @@ async function analyze(){
       data.recommendations.forEach(rec => {
         const li = document.createElement('li');
         const posterImg = rec.poster ? `<img class="rec-poster" src="${rec.poster}" alt="${rec.title}">` : `<div class="rec-poster"></div>`;
-        li.innerHTML = `${posterImg}<div class="rec-info"><div>${rec.title}</div><span>${rec.year}</span></div>`;
+const posterIcon = `<div class="rec-poster-icon">🎞️</div>`;
+li.innerHTML = `${posterImg}${posterIcon}<div class="rec-info"><div>${rec.title}</div><span>${rec.year}</span></div>`;
         recList.appendChild(li);
       });
     } else {
