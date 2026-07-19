@@ -52,7 +52,9 @@ def get_movie_id_and_genres(title):
         genre_ids = top.get('genre_ids', [])
         genres = [GENRE_MAP[gid] for gid in genre_ids if gid in GENRE_MAP]
         language = top.get('original_language', 'en')
-        return top.get('id'), genres, 'movie', language
+        release_date = top.get('release_date', '')
+        year = int(release_date[:4]) if release_date else None
+        return top.get('id'), genres, 'movie', language, year
 
     tv_url = f"https://api.themoviedb.org/3/search/tv?api_key={API_KEY}&query={title}"
     tv_response = requests.get(tv_url)
@@ -63,26 +65,34 @@ def get_movie_id_and_genres(title):
         genre_ids = top.get('genre_ids', [])
         genres = [TV_GENRE_MAP[gid] for gid in genre_ids if gid in TV_GENRE_MAP]
         language = top.get('original_language', 'en')
-        return top.get('id'), genres, 'tv', language
+        first_air = top.get('first_air_date', '')
+        year = int(first_air[:4]) if first_air else None
+        return top.get('id'), genres, 'tv', language, year
 
-    return None, [], None, None
+    return None, [], None, None, None
 
 def get_genres(title):
-    _, genres, _, _ = get_movie_id_and_genres(title)
+    _, genres, _, _, _ = get_movie_id_and_genres(title)
     return genres
 
-def get_recommendations_from_movies(movie_list):
+def get_recommendations_from_movies(movie_list, top_genre):
     seen_ids = set()
     input_titles_lower = set(m.lower() for m in movie_list)
     candidates = []
     languages_found = []
+    years_found = []
+
+    top_genre_movie_id = next((gid for gid, gname in GENRE_MAP.items() if gname == top_genre), None)
+    top_genre_tv_id = next((gid for gid, gname in TV_GENRE_MAP.items() if gname == top_genre), None)
 
     for title in movie_list:
-        movie_id, _, media_type, language = get_movie_id_and_genres(title)
+        movie_id, _, media_type, language, year = get_movie_id_and_genres(title)
         if not movie_id:
             continue
         if language:
             languages_found.append(language)
+        if year:
+            years_found.append(year)
 
         rec_url = f"https://api.themoviedb.org/3/{media_type}/{movie_id}/recommendations?api_key={API_KEY}"
         rec_response = requests.get(rec_url)
@@ -93,41 +103,52 @@ def get_recommendations_from_movies(movie_list):
             m_title = m.get('title') or m.get('name', '')
             vote_count = m.get('vote_count', 0)
             m_language = m.get('original_language', '')
+            m_genre_ids = m.get('genre_ids', [])
+            m_date = m.get('release_date') or m.get('first_air_date')
+            m_year = int(m_date[:4]) if m_date else None
+
             if mid in seen_ids or m_title.lower() in input_titles_lower or vote_count < 50:
                 continue
-            # only keep candidates matching the input's dominant language
             if language and m_language != language:
                 continue
+
+            relevant_genre_id = top_genre_movie_id if media_type == 'movie' else top_genre_tv_id
+            if relevant_genre_id and relevant_genre_id not in m_genre_ids:
+                continue
+
             seen_ids.add(mid)
             m['_media_type'] = media_type
+            m['_year'] = m_year
             candidates.append(m)
 
     top_language = max(set(languages_found), key=languages_found.count) if languages_found else 'en'
+    avg_year = round(sum(years_found) / len(years_found)) if years_found else None
 
-    if len(candidates) < 5:
-        all_genres_for_fallback = []
-        for title in movie_list:
-            _, genres, _, _ = get_movie_id_and_genres(title)
-            all_genres_for_fallback.extend(genres)
+    # era filter: drop candidates too far from the input's average year
+    if avg_year:
+        candidates = [
+            m for m in candidates
+            if m.get('_year') is None or abs(m['_year'] - avg_year) <= 15
+        ]
 
-        if all_genres_for_fallback:
-            top_fallback_genre = max(set(all_genres_for_fallback), key=all_genres_for_fallback.count)
-            genre_id = next((gid for gid, gname in GENRE_MAP.items() if gname == top_fallback_genre), None)
-            if genre_id:
-                discover_url = (
-                    f"https://api.themoviedb.org/3/discover/movie?api_key={API_KEY}"
-                    f"&with_genres={genre_id}&sort_by=popularity.desc&vote_count.gte=50"
-                    f"&with_original_language={top_language}"
-                )
-                discover_response = requests.get(discover_url)
-                discover_data = discover_response.json()
-                for m in discover_data.get('results', []):
-                    mid = m.get('id')
-                    m_title = m.get('title', '')
-                    if mid in seen_ids or m_title.lower() in input_titles_lower:
-                        continue
-                    seen_ids.add(mid)
-                    candidates.append(m)
+    if len(candidates) < 5 and top_genre_movie_id:
+        discover_url = (
+            f"https://api.themoviedb.org/3/discover/movie?api_key={API_KEY}"
+            f"&with_genres={top_genre_movie_id}&sort_by=vote_average.desc&vote_count.gte=100"
+            f"&with_original_language={top_language}"
+        )
+        if avg_year:
+            discover_url += f"&primary_release_date.gte={avg_year-15}-01-01&primary_release_date.lte={avg_year+15}-12-31"
+
+        discover_response = requests.get(discover_url)
+        discover_data = discover_response.json()
+        for m in discover_data.get('results', []):
+            mid = m.get('id')
+            m_title = m.get('title', '')
+            if mid in seen_ids or m_title.lower() in input_titles_lower:
+                continue
+            seen_ids.add(mid)
+            candidates.append(m)
 
     candidates.sort(key=lambda m: m.get('vote_average', 0), reverse=True)
 
@@ -241,7 +262,7 @@ def analyze():
     label = personality.get(top_genre, "The Eclectic Viewer")
     quote = quotes.get(top_genre, "Cinema is a mirror by which we often see ourselves.")
 
-    recommendations = get_recommendations_from_movies(movie_list)
+    recommendations = get_recommendations_from_movies(movie_list, top_genre)
 
     return jsonify({
         'top_genre': top_genre,
